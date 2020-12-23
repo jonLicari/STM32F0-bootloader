@@ -50,17 +50,18 @@ UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 // Change mgic number
-// change RAM address to macro
 #if defined ( __GNUC__ )
 __IO uint32_t VectorTable[48] __attribute__((section(".RAMVectorTable")));
 #endif
 
 uint8_t rxByte = 0; // Receives file data
-uint8_t rxCplt = 1;
+uint8_t rxCplt = 0;
+static uint16_t rxIndex = 0; // Receive buffer index
+static uint32_t packetExpect = 0;
+static uint16_t packetIndex = 0;
 uint32_t rxPack[PCK_LEN] = {0}; // Receives total number of packets
 char ready[] = "1";
-// Allocate SRAM to receive data from COM Port
-char *ram;
+char *ram; // Allocate SRAM to receive data from COM Port
 
 /* USER CODE END PV */
 
@@ -68,7 +69,6 @@ char *ram;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
-
 /* USER CODE BEGIN PFP */
 void VectorTableRelocate(void);
 void PeripheralDeInit(void);
@@ -82,6 +82,7 @@ void WriteToFlash (uint16_t index);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
 /* USER CODE END 0 */
 
 /**
@@ -91,17 +92,15 @@ void WriteToFlash (uint16_t index);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-	//char bootMsg[] = "\r\nBOOTLOADER Initialization...\r\n";
-	//char bootMenu[] = "\r\nBOOTLOADER Menu...";
-	char ready[] = "1";
-	char begin[] = "2";
-	char tx[20] = {0};
-	ram = (char*) calloc(CALLOC_SIZE, sizeof(char));
+  char ready[] = "1";
+  char begin[] = "2";
+  char tx[20] = {0};
 
-	if (ram == NULL)
-		sprintf(tx, "Allocate Err");
-	else
-		sprintf(tx, "0x%lX \r\n", (uint32_t)ram);
+  ram = (char*) calloc(CALLOC_SIZE, sizeof(char));
+  if (ram == NULL)
+  	sprintf(tx, "Allocate Err");
+  else
+	sprintf(tx, "0x%lX \r\n", (uint32_t)ram);
 
   /* USER CODE END 1 */
 
@@ -111,13 +110,14 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
+
   /* USER CODE END Init */
 
   /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-  //VectorTableRelocate();
+  VectorTableRelocate();
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -133,35 +133,39 @@ int main(void)
 
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
   HAL_Delay(1000);
-/*
+
   if (HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) != GPIO_PIN_SET) // button not pressed
   {
 	  // ----- Jump to frmwr_v1 -----
 	  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
+
       // Reset peripherals to guarantee flawless start of user application
 	  PeripheralDeInit();
+
 	  // Jump to user application
 	  BLJumpToUsrApp();
   }
-  else // Button pressed
-  {
-	  //HAL_UART_Transmit(&huart1, (uint8_t*)bootMenu, sizeof(bootMenu), 20);
-*/
-  	  // Erase User App space
-  	  EraseFlashApp();
 
-	  // Send Ready signal to PC to begin download
-	  HAL_Delay(500);
-	  HAL_UART_Transmit(&huart1, (uint8_t*)begin, sizeof(begin), HAL_MAX_DELAY);
-	  HAL_Delay(1000);
-  //} // end else
+  // Erase User App space
+  EraseFlashApp();
 
-	  // Receive number of packets from UART
-	  HAL_UART_Receive(&huart1, (uint8_t *)&rxPack, 1, HAL_MAX_DELAY);
-	  HAL_UART_Receive(&huart1, (uint8_t *)&rxPack[1], 1, HAL_MAX_DELAY);
-	  HAL_UART_Receive(&huart1, (uint8_t *)&rxPack[2], 1, HAL_MAX_DELAY);
-	  HAL_UART_Receive(&huart1, (uint8_t *)&rxPack[3], 1, HAL_MAX_DELAY);
-	  // Now host waits for ready bit to send data packets
+  // Send Ready signal to PC to begin download
+  HAL_Delay(500);
+  HAL_UART_Transmit(&huart1, (uint8_t*)begin, sizeof(begin), HAL_MAX_DELAY);
+  HAL_Delay(1000);
+
+  // Receive number of packets from UART
+  HAL_UART_Receive(&huart1, (uint8_t *)&rxPack, 1, HAL_MAX_DELAY);
+  HAL_UART_Receive(&huart1, (uint8_t *)&rxPack[1], 1, HAL_MAX_DELAY);
+  HAL_UART_Receive(&huart1, (uint8_t *)&rxPack[2], 1, HAL_MAX_DELAY);
+  //HAL_UART_Receive(&huart1, (uint8_t *)&rxPack[3], 1, HAL_MAX_DELAY);
+
+  // Process number of expected packets
+  packetExpect = TotalPack();
+
+  // Now host waits for ready bit to send data packets
+  HAL_Delay(1000);
+  HAL_UART_Transmit(&huart1, (uint8_t*)ready, sizeof(ready), HAL_MAX_DELAY);
 
   /* USER CODE END 2 */
 
@@ -169,20 +173,30 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  /*
-	   * with RxIT() being called so many times, it will interrupt the flow of
-	   * the while so i should have all the byte handling done in the
-	   * rx callback ffunction
-	   */
 
-	  // rxCplt default set to enter conditional and send ready bit
-	  if (rxCplt == 1)
-	  {
-		  rxCplt = 0;
-		  HAL_Delay(1000);
-		  HAL_UART_Transmit(&huart1, (uint8_t*)ready, sizeof(ready), HAL_MAX_DELAY);
-	  }
 	  HAL_UART_Receive_IT(&huart1, (uint8_t *)&rxByte, sizeof(rxByte));
+
+	  if (rxCplt == 1) { // Write RAM buffer contents to Flash
+		  rxCplt = 0;
+		  *(ram + rxIndex) = rxByte;
+		  rxIndex += 1;
+
+		  if (rxIndex == CALLOC_SIZE) { /* end of packet */
+		  	packetIndex++;
+		  	WriteToFlash(rxIndex); // Write RAM buffer contents to Flash
+		  	rxIndex = 0;
+		  	// Process complete, send Ready flag
+		  	HAL_Delay(500);
+		  	HAL_UART_Transmit(&huart1, (uint8_t*)ready, sizeof(ready), HAL_MAX_DELAY);
+		  }
+
+		  // Flush Receive Data Register
+		  __HAL_UART_FLUSH_DRREGISTER(&huart1);
+	  }
+	  else if (rxCplt == 2) { // Soft reset once program flash is complete
+		  rxCplt = 0;
+		  NVIC_SystemReset();
+	  }
 
     /* USER CODE END WHILE */
 
@@ -251,7 +265,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
+  huart1.Init.BaudRate = 9600;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
@@ -462,42 +476,18 @@ static inline uint32_t TotalPack(void)
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-	static uint16_t rxIndex = 0;
-	static uint32_t packetExpect = 0;
-	static uint16_t packetIndex = 0;
-
 	if (huart == &huart1) {
 		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
 
-		/* Read data into buffer if enter is not received */
-		if (packetIndex == 0) { // Read in expected number of bytes
-			packetExpect = TotalPack();
-			packetIndex++;
-			//rxCplt = 1;
-			HAL_UART_Transmit(&huart1, (uint8_t*)ready, sizeof(ready), HAL_MAX_DELAY);
-
-		}
-		else if ((packetIndex != 0) && (packetIndex < packetExpect+1)) {
-				*(ram + rxIndex) = rxByte;
-				rxIndex++;
-
-				if (rxIndex == CALLOC_SIZE) { /* end of packet */
-					packetIndex++;
-					WriteToFlash(rxIndex); // Pass the index
-					rxIndex = 0;
-					//rxCplt = 1;
-					HAL_UART_Transmit(&huart1, (uint8_t*)ready, sizeof(ready), HAL_MAX_DELAY);
-				}
+		if (packetIndex < packetExpect) {
+			rxCplt = 1;
 		}
 		else { // All packets written
-			//NVIC_SystemReset(); // Soft reset once program flash is complete
+			rxCplt = 2; // Soft reset once program flash is complete
 		}
-	}
-	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
 
-	// Flush Receive Data Register
-	__HAL_UART_FLUSH_DRREGISTER(&huart1);
-	HAL_UART_Receive_IT(&huart1, (uint8_t*)&rxByte, sizeof(rxByte));
+		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+	}
 }
 
 /* USER CODE END 4 */
