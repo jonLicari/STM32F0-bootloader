@@ -1,24 +1,23 @@
-#!/usr/bin/env python
-
 import serial
 import time
 import os
 
 # Constants
-fileName = 'fv2.txt'
+fileName = 'fv2cubenew.bin'
 portNum = 'COM3'
 SIZE = 8
+sleepTime = 1
 
 # Open data file for r -read b -binary (for images)
 dataFile = open(fileName, 'rb') 
 
 # Open serial COM port
 port = serial.Serial(
-  port = portNum, 
-  baudrate = 115200, 
-  bytesize = serial.EIGHTBITS, 
-  parity = serial.PARITY_NONE, 
-  stopbits = serial.STOPBITS_ONE
+    port = portNum, 
+    baudrate = 9600, 
+    bytesize = serial.EIGHTBITS, 
+    parity = serial.PARITY_NONE, 
+    stopbits = serial.STOPBITS_ONE
 )
 
 # Ensure Port is open
@@ -33,11 +32,10 @@ endFlag = 0
 def main():
     ctr = 0
     while True:
-        # Read UART for ready flag
-        flag = port.read(1)  
-        if (flag == b'2'): 
+        flag = port.read(1) # Read UART 
+        if (flag == b'2'): # Only transmit once STM is ready
             print(flag)
-            time.sleep(1)
+            time.sleep(sleepTime)
             # Send the number of packets to be expected
             NumberOfPackets()
             break
@@ -45,26 +43,20 @@ def main():
     time.sleep(1)
 
     while True:
-        # Read UART for ready flag
-        flag = port.read(1)  
-        if (flag == b'1'): 
+        flag = port.read(1) # Read UART 
+        if (flag == b'1'): # Only transmit once STM is ready
             print(flag)
-            # Reset ready flag
-            flag = 0 
-            time.sleep(1)
-            # Transmit data packet 
+            flag = 0 # reset ready bit
+            time.sleep(sleepTime)
             transmit()
-            # Increment the packet counter
             ctr+=1
             print(ctr)
-            # End of packet 
             if (endFlag == 1):
                 print("Close port")
                 port.close()
-                # Exit main() if end of file is reached
-                break 
-        else:
-            print("Waiting..")
+                break # Exit main() if end of file is reached
+        #else:
+            #print("Waiting..")
 
 def transmit():
     # Send bytes to com port to be received
@@ -82,23 +74,20 @@ def transmit():
             #break # out of while loop, to transmit()
         else:
             port.write(byte) # Write byte to UART
-            #print(byte)
-        
+            print(byte)
         index += 1
         
     if (endFlag == 1):
         print("End of file ")
         # Close file 
         dataFile.close()
-        
     print("End packet ")
 
 def NumberOfPackets():
     totalBytes = os.stat(fileName).st_size 
     packetSize = totalBytes//SIZE
 
-    # File size perfectly divisible by packet size
-    if (totalBytes%SIZE == 0): 
+    if (totalBytes%SIZE == 0): # File size perfectly divisible by packet size
         port.write(str(packetSize).encode())
         print(str(packetSize).encode())
     else:
