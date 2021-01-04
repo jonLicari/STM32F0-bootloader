@@ -49,7 +49,6 @@
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-// Change mgic number
 #if defined ( __GNUC__ )
 __IO uint32_t VectorTable[48] __attribute__((section(".RAMVectorTable")));
 #endif
@@ -127,18 +126,12 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  // 2. BOOTING MESSAGE
-    //HAL_UART_Transmit(&huart1, (uint8_t*) bootMsg, sizeof(bootMsg), HAL_MAX_DELAY);
-
-  // Turn on Blue LED to signal BL operation
-  //HAL_UART_Transmit(&huart1, (uint8_t*)tx, sizeof(tx), HAL_MAX_DELAY);
-
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_SET);
   HAL_Delay(1000);
 
-  if (HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) != GPIO_PIN_SET) // button not pressed
+  //  If the USER button is not pressed, jump to User Application
+  if (HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) != GPIO_PIN_SET) 
   {
-	  // ----- Jump to frmwr_v1 -----
 	  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);
 
       // Reset peripherals to guarantee flawless start of user application
@@ -148,6 +141,8 @@ int main(void)
 	  BLJumpToUsrApp();
   }
 
+  // If USER button is pressed, enter BL Mode to download new firmware program
+  
   // Erase User App space
   EraseFlashApp();
 
@@ -420,7 +415,7 @@ void EraseFlashApp(void)
 // void EraseFlashBL(void)
 
 // Pass ram buffer index
-void WriteToFlash (uint16_t index)//char *data, uint16_t size)
+void WriteToFlash (uint16_t index)
 {
 	uint8_t i;
 	static uint32_t offset = 0;
