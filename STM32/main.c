@@ -35,8 +35,8 @@
 /* USER CODE BEGIN PD */
 #define FLASH_BASE_ADDR ((uint32_t)0x8000000)
 #define FLASH_USR_ADDR ((uint32_t)0x08005000)
-#define CALLOC_SIZE 8
-#define PCK_LEN 4
+#define CALLOC_SIZE 128
+#define PCK_LEN 3
 #define SWAP_INT32(x) (((x) >> 24) | (((x) & 0x00FF0000) >> 8) | (((x) & 0x0000FF00) << 8) | ((x) << 24))
 /* USER CODE END PD */
 
@@ -96,7 +96,9 @@ int main(void)
   char begin[] = "2";
   char tx[20] = {0};
 
+  // Allocate RAM buffer
   ram = (char*) calloc(CALLOC_SIZE, sizeof(char));
+
   if (ram == NULL)
   	sprintf(tx, "Allocate Err");
   else
@@ -155,10 +157,10 @@ int main(void)
   HAL_Delay(1000);
 
   // Receive number of packets from UART
-  HAL_UART_Receive(&huart1, (uint8_t *)&rxPack, 1, HAL_MAX_DELAY);
-  HAL_UART_Receive(&huart1, (uint8_t *)&rxPack[1], 1, HAL_MAX_DELAY);
-  HAL_UART_Receive(&huart1, (uint8_t *)&rxPack[2], 1, HAL_MAX_DELAY);
-  //HAL_UART_Receive(&huart1, (uint8_t *)&rxPack[3], 1, HAL_MAX_DELAY);
+  // PCK_LEN: 2 digits < 12800 B
+  // PCK_LEN: 3 digits >= 12800 B
+  for (uint8_t i = 0; i < PCK_LEN; i++)
+	  HAL_UART_Receive(&huart1, (uint8_t *)&rxPack[i], 1, HAL_MAX_DELAY);
 
   // Process number of expected packets
   packetExpect = TotalPack();
@@ -173,7 +175,6 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-
 	  HAL_UART_Receive_IT(&huart1, (uint8_t *)&rxByte, sizeof(rxByte));
 
 	  if (rxCplt == 1) { // Write RAM buffer contents to Flash
@@ -181,7 +182,7 @@ int main(void)
 		  *(ram + rxIndex) = rxByte;
 		  rxIndex += 1;
 
-		  if (rxIndex == CALLOC_SIZE) { /* end of packet */
+		  if (rxIndex == CALLOC_SIZE) { // end of packet
 		  	packetIndex++;
 		  	WriteToFlash(rxIndex); // Write RAM buffer contents to Flash
 		  	rxIndex = 0;
@@ -193,8 +194,9 @@ int main(void)
 		  // Flush Receive Data Register
 		  __HAL_UART_FLUSH_DRREGISTER(&huart1);
 	  }
-	  else if (rxCplt == 2) { // Soft reset once program flash is complete
-		  rxCplt = 0;
+
+	  if (packetIndex >= packetExpect) {
+		  // Soft reset once program flash is complete
 		  NVIC_SystemReset();
 	  }
 
@@ -329,7 +331,7 @@ void VectorTableRelocate(void)
 	uint32_t i = 0;
 
 	/* Assign VT to address array in SRAM */
-	for (i = 0; i < 48; i++) // Change magic number
+	for (i = 0; i < 48; i++)
 		VectorTable[i] = *(__IO uint32_t*)(FLASH_USR_ADDR + (i<<2));
 
 }
@@ -479,12 +481,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 	if (huart == &huart1) {
 		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
 
-		if (packetIndex < packetExpect) {
+		if (packetIndex <= packetExpect)
 			rxCplt = 1;
-		}
-		else { // All packets written
-			rxCplt = 2; // Soft reset once program flash is complete
-		}
 
 		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
 	}
