@@ -3,9 +3,9 @@ import time
 import os
 
 # Constants
-fileName = 'fv2cubenew.bin'
+fileName = 'NewFirmware.bin'
 portNum = 'COM3'
-SIZE = 8
+SIZE = 128
 sleepTime = 1
 
 # Open data file for r -read b -binary (for images)
@@ -55,8 +55,8 @@ def main():
                 print("Close port")
                 port.close()
                 break # Exit main() if end of file is reached
-        #else:
-            #print("Waiting..")
+        else:
+            print("Waiting..")
 
 def transmit():
     # Send bytes to com port to be received
@@ -70,7 +70,7 @@ def transmit():
             global endFlag
             endFlag = 1 # Set end of file flag
             port.write(b'0xFF')
-            #print(b'0xFF')
+            print(b'0xFF')
             #break # out of while loop, to transmit()
         else:
             port.write(byte) # Write byte to UART
