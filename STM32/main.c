@@ -33,18 +33,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define FLASH_BASE_ADDR ((uint32_t) 0x8000000) // Base address of flash memory
-#define FLASH_USR_ADDR ((uint32_t) 0x08005000) // Base address of user app flash memory
-#define MAX_FLASH_PAGES 64 // Maximum number of pages of flash memory
-#define CALLOC_SIZE 256 // Number of bytes per data packet
-#define PCK_LEN 2
-#define VT_SIZE 48 	// Number of elements in interrupt vector table
-#define USER_BTN_PORT B1_GPIO_Port
-#define USER_BTN_PIN B1_Pin
-#define BLUE_LED_PIN GPIO_PIN_8
-#define BLUE_LED_PORT GPIOC
-#define GREEN_LED_PIN GPIO_PIN_9
-#define GREEN_LED_PORT GPIOC
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -76,13 +65,8 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
-void VectorTableRelocate(void);
-void PeripheralDeInit(void);
-void BLJumpToUserApp(void);
-void EraseFlashApp(void);
 static inline uint32_t PagesToErase(void);
-static inline uint32_t TotalPacket(void);
-void WriteToFlash (uint16_t index);
+static inline uint32_t TotalPacket(uint32_t *array);
 
 /* USER CODE END PFP */
 
@@ -159,8 +143,6 @@ int main(void)
   // Send Ready signal to PC to begin download
   HAL_UART_Transmit(&huart1, (uint8_t*)begin, sizeof(begin), HAL_MAX_DELAY);
 
-  // PCK_LEN: 2.56 kB <= 2 digits < 25.6 kB
-  // PCK_LEN: 3 digits > 25.6 kB
   for (uint8_t i = 0; i < PCK_LEN; i++)
   {
 	  // Receive number of packets from UART
@@ -168,7 +150,7 @@ int main(void)
   }
 
   // Process number of expected data packets
-  packetExpect = TotalPacket();
+  packetExpect = TotalPacket(rxPack);
 
   // Now host waits for ready bit to send data packets
   HAL_Delay(1000);
@@ -326,6 +308,7 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+
 /**
   * @brief  Relocates Interrupt Vector Table to SRAM
   * @param  None
@@ -336,7 +319,7 @@ void VectorTableRelocate(void)
 	uint32_t i = 0;
 
 	// Assign Vector Table to address array in SRAM
-	for (i = 0; i < 48; i++)
+	for (i = 0; i < VT_SIZE; i++)
 	{
 		VectorTable[i] = *(__IO uint32_t*)(FLASH_USR_ADDR + (i << 2));
 	}
@@ -500,21 +483,21 @@ void WriteToFlash (uint16_t index)
   * @param  None
   * @retval Number of packets to be received
   */
-static inline uint32_t TotalPacket(void)
+static inline uint32_t TotalPacket(uint32_t *array)
 {
 	uint32_t packets = 0;
-	// Lookup table for power of base 10 constants: 10^0
-	static uint32_t pow10[4] = {1, 10, 100, 1000}; // 10^0, 10^1, 10^2,...
+	// Lookup table for power of base 10 constants: 10^0, 10^1, ...
+	static uint32_t pow10[] = {1, 10, 100, 1000};
 
 	for (uint8_t i = 0; i < PCK_LEN; i++)
 	{
-		if (*(rxPack + i) == 0)
+		if (*(array + i) == 0)
 		{
-			packets += (*(rxPack + i)) * pow10[(PCK_LEN - 1) - i];
+			packets += (*(array + i)) * pow10[(PCK_LEN - 1) - i];
 		}
 		else
 		{
-			packets += (*(rxPack + i) - 48) * pow10[(PCK_LEN - 1) - i];
+			packets += (*(array + i)) * pow10[(PCK_LEN - 1) - i];
 		}
 	}
 
