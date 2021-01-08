@@ -66,11 +66,8 @@ def transmit():
             global endFlag
             endFlag = 1 # Set end of file flag
             port.write(b'\xFF')
-            print(b'\xFF')
-            #break # out of while loop, to transmit()
         else:
             port.write(byte) # Write byte to UART
-            print(byte)
 
         index += 1
         
@@ -83,14 +80,28 @@ def transmit():
 
 def NumberOfPackets():
     totalBytes = os.stat(fileName).st_size 
-    packetSize = totalBytes//SIZE
     
     if (totalBytes%SIZE == 0): # File size perfectly divisible by packet size
-        port.write(str(packetSize).encode())
-        print(str(packetSize).encode())
+        packetSize = totalBytes//SIZE
     else:
-        port.write(str(packetSize+1).encode())
-        print(str(packetSize+1).encode())
+        packetSize = (totalBytes//SIZE)+1
+
+    # convert integer to list
+    a = list(map(int, str(packetSize))) 
     
+    # calculate number of digits
+    packLength = len(a)
+
+    # create a list
+    array = [0,0,0,0]
+    
+    # fill in the array with the number of expected packets
+    for i in range(0, packLength): 
+        array.remove(array[0])
+        array.append(a[i])
+
+    port.write(array)
+
+
 if __name__ == "__main__":
     main()
