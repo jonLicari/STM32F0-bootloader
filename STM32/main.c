@@ -42,6 +42,8 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+CRC_HandleTypeDef hcrc;
+
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
@@ -55,7 +57,7 @@ static uint16_t rxIndex = 0; // Receive buffer index
 static uint32_t packetExpect = 0;
 static uint16_t packetIndex = 0;
 uint32_t rxPack[PCK_LEN] = {0}; // Receives total number of packets
-char ready[] = "1";
+uint32_t checksumRx[CRC_LEN] = {0}; // Receive checksum buffer
 char *ram; // Allocate SRAM to receive data from COM Port
 
 /* USER CODE END PV */
@@ -64,9 +66,12 @@ char *ram; // Allocate SRAM to receive data from COM Port
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_CRC_Init(void);
 /* USER CODE BEGIN PFP */
 static inline uint32_t PagesToErase(void);
 static inline uint32_t TotalPacket(uint32_t *array);
+static inline uint32_t WordsToCRC(uint32_t numPackets);
+static inline uint32_t FileChecksum(uint32_t *array);
 
 /* USER CODE END PFP */
 
@@ -82,8 +87,14 @@ static inline uint32_t TotalPacket(uint32_t *array);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-  char ready[] = "1"; // Ready for next transaction flag
-  char begin[] = "2"; // Begin file transfer flag
+  uint32_t crc = 0xFFFFFFFF; // CRC value of user flash space
+  uint32_t crcLength = 0;	// Buffer length for CRC calculation
+  uint32_t crcRx = 0xFFFFFFFF; // new firmware program checksum
+  uint8_t i;
+  const char ready[] = "1"; // Ready for next transaction flag
+  const char begin[] = "2"; // Begin file transfer flag
+  const char ack[] = "Y";
+  const char nack[] = "N";
   char tx[20] = {0};
 
   // Allocate RAM buffer in heap to survive beyond the scope of main
@@ -118,6 +129,7 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART1_UART_Init();
+  MX_CRC_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_GPIO_WritePin(BLUE_LED_PORT, BLUE_LED_PIN, GPIO_PIN_SET);
@@ -143,12 +155,19 @@ int main(void)
   // Send Ready signal to PC to begin download
   HAL_UART_Transmit(&huart1, (uint8_t*)begin, sizeof(begin), HAL_MAX_DELAY);
 
-  for (uint8_t i = 0; i < PCK_LEN; i++)
+  // Receive the checksum of the new firmware program
+  for (i = 0; i < CRC_LEN; i++)
   {
-	  // Receive number of packets from UART
+	  HAL_UART_Receive(&huart1, (uint8_t *)&checksumRx[i], 1, HAL_MAX_DELAY);
+  }
+  // Convert the string to integer
+  crcRx = FileChecksum(checksumRx);
+
+  // Receive number of packets from UART
+  for (i = 0; i < PCK_LEN; i++)
+  {
 	  HAL_UART_Receive(&huart1, (uint8_t *)&rxPack[i], 1, HAL_MAX_DELAY);
   }
-
   // Process number of expected data packets
   packetExpect = TotalPacket(rxPack);
 
@@ -186,6 +205,24 @@ int main(void)
 
 	  if (packetIndex == packetExpect) // All packets have been received
 	  {
+		  // Calculate number of words written by the program
+		  crcLength = WordsToCRC(packetExpect);
+		  // Run CRC32 on user flash space
+		  crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)FLASH_USR_ADDR, crcLength);
+		  // Invert
+		  crc = ~crc;
+		  // Compare it to the received checksum
+		  if (crc == crcRx)
+		  {
+			  // send acknowledge flag to host
+			  HAL_UART_Transmit(&huart1, (uint8_t*)ack, sizeof(ack), HAL_MAX_DELAY);
+		  }
+		  else
+		  {
+			  // send nack flag to host
+			  HAL_UART_Transmit(&huart1, (uint8_t*)nack, sizeof(nack), HAL_MAX_DELAY);
+		  }
+
 		  NVIC_SystemReset(); // Soft reset once program flash is complete
 	  }
 
@@ -238,6 +275,36 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief CRC Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_CRC_Init(void)
+{
+
+  /* USER CODE BEGIN CRC_Init 0 */
+
+  /* USER CODE END CRC_Init 0 */
+
+  /* USER CODE BEGIN CRC_Init 1 */
+
+  /* USER CODE END CRC_Init 1 */
+  hcrc.Instance = CRC;
+  hcrc.Init.DefaultInitValueUse = DEFAULT_INIT_VALUE_ENABLE;
+  hcrc.Init.InputDataInversionMode = CRC_INPUTDATA_INVERSION_NONE;
+  hcrc.Init.OutputDataInversionMode = CRC_OUTPUTDATA_INVERSION_DISABLE;
+  hcrc.InputDataFormat = CRC_INPUTDATA_FORMAT_BYTES;
+  if (HAL_CRC_Init(&hcrc) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN CRC_Init 2 */
+
+  /* USER CODE END CRC_Init 2 */
+
 }
 
 /**
@@ -307,7 +374,6 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
 
 /**
   * @brief  Relocates Interrupt Vector Table to SRAM
@@ -520,6 +586,46 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 		}
 		HAL_GPIO_WritePin(GREEN_LED_PORT, GREEN_LED_PIN, GPIO_PIN_RESET);
 	}
+}
+
+/**
+  * @brief  Calculate the number of 32-bit words to include in CRC calculation
+  * @param  numPackets the number of expected packets to be received
+  * @retval wordsToCRC the number of words to CRC
+  */
+static inline uint32_t WordsToCRC(uint32_t numPackets)
+{
+	uint32_t wordsToCRC = (numPackets * CALLOC_SIZE); // Total transmitted bytes
+	wordsToCRC = (wordsToCRC / BYTES_PER_WORD) - 4; // Total number of words
+
+	return wordsToCRC;
+}
+
+/**
+  * @brief  Converts array to single uint32_t
+  * @param  *array the array buffer which received the file checksum from host
+  * @retval checksum the value of the checksum from the new firmware program
+  */
+static inline uint32_t FileChecksum(uint32_t *array)
+{
+	uint32_t checksum = 0;
+	// Lookup table for power of base 10 constants: 10^0, 10^1, ...
+	static uint32_t pow10[] = {1, 10, 100, 1000, 10000, 100000, 1000000,
+								10000000, 100000000, 1000000000};
+
+	for (uint8_t i = 0; i < CRC_LEN; i++)
+	{
+		if (*(array + i) == 0)
+		{
+			checksum += (*(array + i)) * pow10[(CRC_LEN - 1) - i];
+		}
+		else
+		{
+			checksum += (*(array + i)) * pow10[(CRC_LEN - 1) - i];
+		}
+	}
+
+	return checksum;
 }
 
 /* USER CODE END 4 */
