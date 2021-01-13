@@ -24,7 +24,6 @@ port = serial.Serial(
 # Ensure Port is open
 if (port.isOpen() == False):
     port.open()
-
 print("Connected to port")
 
 # End of file flag
@@ -32,8 +31,9 @@ endFlag = 0
 
 def main():
     global endFlag
-
+    packetBuf = 0
     ctr = 0
+
     while True:
         flag = port.read(1) # Read UART 
         if (flag == b'2'): # Only transmit once STM is ready
@@ -41,82 +41,66 @@ def main():
             flag = 0
             time.sleep(1)
             
-            # Send the checksum of the firmware file 
-            crc = Checksum(fileName)
-            print(crc)
-            crcDecimal = int(crc, 16)
-            print(crcDecimal)
-            # convert integer to list
-            a = list(map(int, str(crcDecimal)))
-            print(a)
-            port.write(a)
-
             # Send the number of packets to be expected
             NumberOfPackets()
             break
 
     while True:
         flag = port.read(1) # Read UART 
-        if (flag == b'1'): # Only transmit once STM is ready
-            print(flag)
+
+        if (flag == b'1'): # Transmit next packet
+            print("Ready for next packet")
             flag = 0 # reset ready bit
-            Transmit()
-            ctr += 1
-            print(ctr)
-            
+            print(ctr) # Print number ID of packet to be sent
+
+            packetBuf = ReadNextPacket()
+
             # EOF handling
             if (endFlag == 1):
-                endFlag = (endFlag and 0)
-                # Read ack/ nack flag from MCU
-                crcCheckFlag = port.read(1)
-                print("CRC Flag: " + str(crcCheckFlag))
+                endFlag = (endFlag and 0) # Clear flag
+                print("Close Port")
+                port.close()
+                break
+            else:
+                Transmit(packetBuf)
+                ctr += 1 # Increment packet ID counter if transmission is successful
 
-                if (crcCheckFlag == "Y"):
-                    # Close UART COM Port
-                    print("Close port")
-                    port.close()
-                    break # Exit main() if end of file is reached
-
-                elif (crcCheckFlag == "N"):
-                    # Close UART COM Port
-                    print("Close port")
-                    port.close()
-                    # Checksum did not match, restart update                    
-                    #os.execl(sys.executable, sys.executable, *sys.argv)
-                    break
-                else:
-                    print("Error: Checksum did not match")
-                    port.close()
-                    break 
-
-                break                   
+        elif(flag == b'2'): # Checksum did not match, send packet again
+            print("Checksum Error: Resending packet " + str(ctr-1) + "...")
+            flag = 0 # reset ready bit
+            # Do not update packet buffer
+            Transmit(packetBuf) # Resend packet
+            # Do not increment packet ID
             
-        #else:
-            #print("Waiting..")
+        else:
+            print("Waiting..")
 
-def Transmit():
+
+def ReadNextPacket():
     global endFlag
+
+    packet = dataFile.read(SIZE) # Read bytes from file 
+    
+    if (packet == b''):
+        endFlag = 1              # Set end of file flag
+        print("End of file ")
+        dataFile.close()         # Close file 
+    
+    return packet
+
+
+def Transmit(dataPacket):
+    checkVal = Checksum(dataPacket)         # String of hexadecimal format
+    crcDecimal = int(checkVal, 16)          # convert to decimal 
+    crc = list(map(int, str(crcDecimal)))   # convert integer to list
+    print(crc)
 
     # Send bytes to com port to be received
     print("Begin Transmission")
-    index = 0
-
-    while (index < SIZE):
-        byte = dataFile.read(1) # read 1 byte
-
-        if (byte == b''):
-            endFlag = 1 # Set end of file flag
-            port.write(b'\xFF')
-        else:
-            port.write(byte) # Write byte to UART
-
-        index += 1
-        
-    if (endFlag == 1):
-        print("End of file ")
-        dataFile.close() # Close file 
-
+    port.write(dataPacket)  # Send data packet 
+    port.write(crc)         # Send checksum of packet
     print("End packet ")
+
 
 def NumberOfPackets():
     totalBytes = os.stat(fileName).st_size 
@@ -126,7 +110,7 @@ def NumberOfPackets():
     else:
         packetSize = (totalBytes//SIZE)+1
     
-    print(packetSize)
+    print("Number of packets: " + str(packetSize))
     
     # convert integer to list
     a = list(map(int, str(packetSize))) 
@@ -144,10 +128,11 @@ def NumberOfPackets():
 
     port.write(array)
 
-def Checksum(fileName):
-    buf = open(fileName,'rb').read()
-    buf = (binascii.crc32(buf) & 0xFFFFFFFF)
+
+def Checksum(array):
+    buf = (binascii.crc32(array) & 0xFFFFFFFF) # Calculate checksum of the bytearray
     return "%08X" % buf
+
 
 if __name__ == "__main__":
     main()
