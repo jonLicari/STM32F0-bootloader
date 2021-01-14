@@ -58,6 +58,7 @@ def main():
             # EOF handling
             if (endFlag == 1):
                 endFlag = (endFlag and 0) # Clear flag
+                Transmit(packetBuf)
                 print("Close Port")
                 port.close()
                 break
@@ -80,7 +81,7 @@ def ReadNextPacket():
     global endFlag
 
     packet = dataFile.read(SIZE) # Read bytes from file 
-    
+
     if (packet == b''):
         endFlag = 1              # Set end of file flag
         print("End of file ")
@@ -90,9 +91,20 @@ def ReadNextPacket():
 
 
 def Transmit(dataPacket):
+    dLength = len(dataPacket)
+    
+    if (dLength != SIZE):                   # If end of file reached
+        for x in range(dLength, SIZE):
+                #port.write(b'\xFF')
+                dataPacket += b'\xFF'       # Append null characters to fill packet 
+                x += 1
+
     checkVal = Checksum(dataPacket)         # String of hexadecimal format
     crcDecimal = int(checkVal, 16)          # convert to decimal 
     crc = list(map(int, str(crcDecimal)))   # convert integer to list
+    if (len(crc) != 10):                    # STM32 expects 10 digits
+        crc.insert(0, 0)
+
     print(crc)
 
     # Send bytes to com port to be received
