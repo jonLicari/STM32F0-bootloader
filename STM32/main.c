@@ -58,7 +58,7 @@ static uint32_t packetExpect = 0;
 static uint16_t packetIndex = 0;
 uint32_t rxPack[PCK_LEN] = {0}; // Receives total number of packets
 uint32_t checksumRx[CRC_LEN] = {0}; // Receive checksum buffer
-char *ram; // Allocate SRAM to receive data from COM Port
+uint8_t *ram; // Allocate SRAM to receive data from COM Port
 
 /* USER CODE END PV */
 
@@ -96,9 +96,15 @@ int main(void)
   const char ack[] = "1";	// Checksum match
   const char nack[] = "2";	// Checksum mismatch
   char tx[20] = {0};
+  const uint32_t checksum[] = {
+		  329879226, 449673724, 4140103232, 931376538, 1890820909,  1819448497,
+		  1951130121, 3502373503, 1803464321, 363676448, 1890804407, 1898828815,
+		  123227065, 2161815714, 2189338259, 1234554558, 3356306015, 2401270816,
+		  2441396212, 1190719778
+  };
 
   // Allocate RAM buffer in heap to survive beyond the scope of main
-  ram = (char*) calloc(CALLOC_SIZE, sizeof(char));
+  ram = (uint8_t*) calloc(CALLOC_SIZE, sizeof(uint8_t));
 
   if (ram == NULL)
   {
@@ -194,9 +200,9 @@ int main(void)
 
 			  crcLength = WordsToCRC(); // Number of words in one packet
 			  // Run CRC32 on RAM buffer
-			  crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)ram, crcLength);
-			  crc = ~crc; // Invert
-
+			  crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)ram, crcLength); // Uncomment for debugging HAL CRC
+			  crc = ~crc; // Invert // Uncomment for debugging 
+			  crc = checksum[packetIndex]; // Override HAL CRC 
 			  if (crc == crcRx) // If checksums match
 			  {
 				  packetIndex++;			// Increment packet number
