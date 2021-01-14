@@ -70,8 +70,8 @@ static void MX_CRC_Init(void);
 /* USER CODE BEGIN PFP */
 static inline uint32_t PagesToErase(void);
 static inline uint32_t TotalPacket(uint32_t *array);
-static inline uint32_t WordsToCRC(uint32_t numPackets);
-static inline uint32_t FileChecksum(uint32_t *array);
+static inline uint32_t WordsToCRC(void);
+static inline uint32_t ArrayToInt(uint32_t *array, uint8_t length);
 
 /* USER CODE END PFP */
 
@@ -93,8 +93,8 @@ int main(void)
   uint8_t i;
   const char ready[] = "1"; // Ready for next transaction flag
   const char begin[] = "2"; // Begin file transfer flag
-  const char ack[] = "Y";
-  const char nack[] = "N";
+  const char ack[] = "1";	// Checksum match
+  const char nack[] = "2";	// Checksum mismatch
   char tx[20] = {0};
 
   // Allocate RAM buffer in heap to survive beyond the scope of main
@@ -155,14 +155,6 @@ int main(void)
   // Send Ready signal to PC to begin download
   HAL_UART_Transmit(&huart1, (uint8_t*)begin, sizeof(begin), HAL_MAX_DELAY);
 
-  // Receive the checksum of the new firmware program
-  for (i = 0; i < CRC_LEN; i++)
-  {
-	  HAL_UART_Receive(&huart1, (uint8_t *)&checksumRx[i], 1, HAL_MAX_DELAY);
-  }
-  // Convert the string to integer
-  crcRx = FileChecksum(checksumRx);
-
   // Receive number of packets from UART
   for (i = 0; i < PCK_LEN; i++)
   {
@@ -185,51 +177,53 @@ int main(void)
 
 	  if (rxCplt == 1) // If receive transaction is complete
 	  {
-		  rxCplt = 0;			// Clear flag
+		  rxCplt = 0;					// Clear flag
 		  *(ram + rxIndex) = rxByte;	// Store received byte in RAM buffer
-		  rxIndex += 1;			// Increment RAM offset
+		  rxIndex += 1;					// Increment RAM offset
 
-		  if (rxIndex == CALLOC_SIZE) 	// Data packet is filled
+		  if (rxIndex == CALLOC_SIZE) 	// Data Packet Filled handling
 		  {
-		  	packetIndex++;		// Increment the number of packets received
-		  	WriteToFlash(rxIndex); 	// Write RAM buffer contents to Flash
-		  	rxIndex = 0;		// Clear the packet index
+			  // Receive the checksum of the new data packet
+			  for (i = 0; i < CRC_LEN; i++)
+			  {
+				  HAL_UART_AbortReceive_IT(&huart1);
+				  HAL_UART_Receive(&huart1, (uint8_t *)&checksumRx[i], 1, HAL_MAX_DELAY);
+			  }
+			  // Convert the array to integer
+			  crcRx = ArrayToInt(checksumRx, (uint8_t)CRC_LEN);
 
-		  	// Process complete, send Ready flag
-		  	HAL_UART_Transmit(&huart1, (uint8_t*)ready, sizeof(ready), HAL_MAX_DELAY);
-		  }
+			  crcLength = WordsToCRC(); // Number of words in one packet
+			  // Run CRC32 on RAM buffer
+			  crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)ram, crcLength);
+			  crc = ~crc; // Invert
 
-		  // Flush Receive Data Register
-		  __HAL_UART_FLUSH_DRREGISTER(&huart1);
-	  }
+			  if (crc == crcRx) // If checksums match
+			  {
+				  packetIndex++;			// Increment packet number
+				  WriteToFlash(rxIndex); 	// Write RAM buffer contents to Flash
+
+				  // Send acknowledge flag to host
+				  HAL_UART_Transmit(&huart1, (uint8_t*)ack, sizeof(ack), HAL_MAX_DELAY);
+			  }
+			  else
+			  {
+				  // Send nack flag to host
+				  HAL_UART_Transmit(&huart1, (uint8_t*)nack, sizeof(nack), HAL_MAX_DELAY);
+			  }
+			  rxIndex = 0;				// Clear the packet index
+		  } // End Data Packet Filled handling
+		  __HAL_UART_FLUSH_DRREGISTER(&huart1);	  // Flush Receive Data Register
+	  } // End rxCplt handling
 
 	  if (packetIndex == packetExpect) // All packets have been received
 	  {
-		  // Calculate number of words written by the program
-		  crcLength = WordsToCRC(packetExpect);
-		  // Run CRC32 on user flash space
-		  crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)FLASH_USR_ADDR, crcLength);
-		  // Invert
-		  crc = ~crc;
-		  // Compare it to the received checksum
-		  if (crc == crcRx)
-		  {
-			  // send acknowledge flag to host
-			  HAL_UART_Transmit(&huart1, (uint8_t*)ack, sizeof(ack), HAL_MAX_DELAY);
-		  }
-		  else
-		  {
-			  // send nack flag to host
-			  HAL_UART_Transmit(&huart1, (uint8_t*)nack, sizeof(nack), HAL_MAX_DELAY);
-		  }
-
 		  NVIC_SystemReset(); // Soft reset once program flash is complete
 	  }
 
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-  }
+  } // End while(1)
   /* USER CODE END 3 */
 }
 
@@ -296,7 +290,7 @@ static void MX_CRC_Init(void)
   hcrc.Init.DefaultInitValueUse = DEFAULT_INIT_VALUE_ENABLE;
   hcrc.Init.InputDataInversionMode = CRC_INPUTDATA_INVERSION_NONE;
   hcrc.Init.OutputDataInversionMode = CRC_OUTPUTDATA_INVERSION_DISABLE;
-  hcrc.InputDataFormat = CRC_INPUTDATA_FORMAT_BYTES;
+  hcrc.InputDataFormat = CRC_INPUTDATA_FORMAT_WORDS;
   if (HAL_CRC_Init(&hcrc) != HAL_OK)
   {
     Error_Handler();
@@ -410,6 +404,7 @@ void PeripheralDeInit(void)
 	__HAL_RCC_GPIOC_CLK_DISABLE();
 	//__HAL_RCC_GPIOD_CLK_DISABLE();
 
+	HAL_CRC_DeInit(&hcrc);
 	// 2. ADC
 	// 3. DAC1
 	// 4. TIMX
@@ -593,39 +588,39 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   * @param  numPackets the number of expected packets to be received
   * @retval wordsToCRC the number of words to CRC
   */
-static inline uint32_t WordsToCRC(uint32_t numPackets)
+static inline uint32_t WordsToCRC(void)
 {
-	uint32_t wordsToCRC = (numPackets * CALLOC_SIZE); // Total transmitted bytes
-	wordsToCRC = (wordsToCRC / BYTES_PER_WORD) - 4; // Total number of words
+	uint32_t wordsToCRC = 0;
+	wordsToCRC = (CALLOC_SIZE / BYTES_PER_WORD) - 1; // Number of words in one packet
 
 	return wordsToCRC;
 }
 
 /**
   * @brief  Converts array to single uint32_t
-  * @param  *array the array buffer which received the file checksum from host
-  * @retval checksum the value of the checksum from the new firmware program
+  * @param  *array - array to be converted
+  * @retval integer - the integer representation of input array
   */
-static inline uint32_t FileChecksum(uint32_t *array)
+static inline uint32_t ArrayToInt(uint32_t *array, uint8_t length)
 {
-	uint32_t checksum = 0;
+	uint32_t integer = 0;
 	// Lookup table for power of base 10 constants: 10^0, 10^1, ...
 	static uint32_t pow10[] = {1, 10, 100, 1000, 10000, 100000, 1000000,
 								10000000, 100000000, 1000000000};
 
-	for (uint8_t i = 0; i < CRC_LEN; i++)
+	for (uint8_t i = 0; i < length; i++)
 	{
 		if (*(array + i) == 0)
 		{
-			checksum += (*(array + i)) * pow10[(CRC_LEN - 1) - i];
+			integer += (*(array + i)) * pow10[(length - 1) - i];
 		}
 		else
 		{
-			checksum += (*(array + i)) * pow10[(CRC_LEN - 1) - i];
+			integer += (*(array + i)) * pow10[(length - 1) - i];
 		}
 	}
 
-	return checksum;
+	return integer;
 }
 
 /* USER CODE END 4 */
