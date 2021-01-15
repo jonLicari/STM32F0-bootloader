@@ -42,8 +42,6 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-CRC_HandleTypeDef hcrc;
-
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
@@ -66,12 +64,14 @@ uint8_t *ram; // Allocate SRAM to receive data from COM Port
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
-static void MX_CRC_Init(void);
 /* USER CODE BEGIN PFP */
 static inline uint32_t PagesToErase(void);
 static inline uint32_t TotalPacket(uint32_t *array);
-static inline uint32_t WordsToCRC(void);
+//static inline uint32_t WordsToCRC(void);
 static inline uint32_t ArrayToInt(uint32_t *array, uint8_t length);
+uint32_t PackSum(void);
+uint32_t ModbusCRC(char *array, uint16_t length);
+
 
 /* USER CODE END PFP */
 
@@ -87,21 +87,22 @@ static inline uint32_t ArrayToInt(uint32_t *array, uint8_t length);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-  uint32_t crc = 0xFFFFFFFF; // CRC value of user flash space
-  uint32_t crcLength = 0;	// Buffer length for CRC calculation
-  uint32_t crcRx = 0xFFFFFFFF; // new firmware program checksum
+  uint32_t crc = 0xFFFFFFFF; 	// CRC value generated MCU side
+  //uint32_t crcLength = 0;		// Buffer length for CRC calculation
+  uint32_t crcRx = 0xFFFFFFFF; 	// new firmware program checksum
   uint8_t i;
   const char ready[] = "1"; // Ready for next transaction flag
   const char begin[] = "2"; // Begin file transfer flag
   const char ack[] = "1";	// Checksum match
   const char nack[] = "2";	// Checksum mismatch
   char tx[20] = {0};
+  /*
   const uint32_t checksum[] = {
 		  329879226, 449673724, 4140103232, 931376538, 1890820909,  1819448497,
 		  1951130121, 3502373503, 1803464321, 363676448, 1890804407, 1898828815,
 		  123227065, 2161815714, 2189338259, 1234554558, 3356306015, 2401270816,
 		  2441396212, 1190719778
-  };
+  };*/
 
   // Allocate RAM buffer in heap to survive beyond the scope of main
   ram = (uint8_t*) calloc(CALLOC_SIZE, sizeof(uint8_t));
@@ -135,7 +136,6 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART1_UART_Init();
-  MX_CRC_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_GPIO_WritePin(BLUE_LED_PORT, BLUE_LED_PIN, GPIO_PIN_SET);
@@ -198,11 +198,10 @@ int main(void)
 			  // Convert the array to integer
 			  crcRx = ArrayToInt(checksumRx, (uint8_t)CRC_LEN);
 
-			  crcLength = WordsToCRC(); // Number of words in one packet
-			  // Run CRC32 on RAM buffer
-			  crc = HAL_CRC_Calculate(&hcrc, (uint32_t*)ram, crcLength); // Uncomment for debugging HAL CRC
-			  crc = ~crc; // Invert // Uncomment for debugging 
-			  crc = checksum[packetIndex]; // Override HAL CRC 
+			  //crc = PackSum(); // Generated sum of all elements in packet
+			  // Run CRC16 on RAM buffer
+			  crc = ModbusCRC((char *)ram, (uint16_t)CALLOC_SIZE);
+
 			  if (crc == crcRx) // If checksums match
 			  {
 				  packetIndex++;			// Increment packet number
@@ -278,36 +277,6 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief CRC Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_CRC_Init(void)
-{
-
-  /* USER CODE BEGIN CRC_Init 0 */
-
-  /* USER CODE END CRC_Init 0 */
-
-  /* USER CODE BEGIN CRC_Init 1 */
-
-  /* USER CODE END CRC_Init 1 */
-  hcrc.Instance = CRC;
-  hcrc.Init.DefaultInitValueUse = DEFAULT_INIT_VALUE_ENABLE;
-  hcrc.Init.InputDataInversionMode = CRC_INPUTDATA_INVERSION_NONE;
-  hcrc.Init.OutputDataInversionMode = CRC_OUTPUTDATA_INVERSION_DISABLE;
-  hcrc.InputDataFormat = CRC_INPUTDATA_FORMAT_WORDS;
-  if (HAL_CRC_Init(&hcrc) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN CRC_Init 2 */
-
-  /* USER CODE END CRC_Init 2 */
-
-}
-
-/**
   * @brief USART1 Initialization Function
   * @param None
   * @retval None
@@ -374,6 +343,66 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+uint32_t ModbusCRC(char *array, uint16_t length) {
+	uint32_t crc = 0xFFFFFFFF;
+	uint32_t test;
+	for (uint16_t pos = 0; pos < length; pos++)
+	{
+		crc ^= (uint32_t)(*(array + pos));	// XOR byte into least sig. byte of CRC
+		test = (*(array + pos));
+		test = (uint32_t)(*(array + pos));
+		for (uint8_t i = 8; i != 0; i--)	// loop over each bit
+		{
+			if ((crc & 0x0001) != 0)		// if the LSB is set
+			{
+				crc >>= 1;					// shift right
+				crc ^= 0xA001;				// XOR CRC16 polynomial
+			}
+			else 							// LSB is not set
+			{
+				crc >>= 1;					// Shift right
+			}
+		}
+	}
+
+	return crc;
+}
+
+/**
+  * @brief  Converts array to single uint32_t
+  * @param  *array - points to array holding number of packets to be received
+  * @retval Number of packets to be received
+  */
+static inline uint32_t TotalPacket(uint32_t *array)
+{
+	uint32_t packets = 0;
+	// Lookup table for power of base 10 constants: 10^0, 10^1, ...
+	static uint32_t pow10[] = {1, 10, 100, 1000};
+
+	for (uint8_t i = 0; i < PCK_LEN; i++)
+	{
+		if (*(array + i) == 0)
+		{
+			packets += (*(array + i)) * pow10[(PCK_LEN - 1) - i];
+		}
+		else
+		{
+			packets += (*(array + i)) * pow10[(PCK_LEN - 1) - i];
+		}
+	}
+
+	return packets;
+}
+
+uint32_t PackSum(void){
+	uint32_t sum = 0;
+
+	for (uint16_t i = 0; i < CALLOC_SIZE; i++) {
+		sum += *(ram + i);
+	}
+
+	return sum;
+}
 
 /**
   * @brief  Relocates Interrupt Vector Table to SRAM
@@ -410,7 +439,6 @@ void PeripheralDeInit(void)
 	__HAL_RCC_GPIOC_CLK_DISABLE();
 	//__HAL_RCC_GPIOD_CLK_DISABLE();
 
-	HAL_CRC_DeInit(&hcrc);
 	// 2. ADC
 	// 3. DAC1
 	// 4. TIMX
@@ -545,31 +573,6 @@ void WriteToFlash (uint16_t index)
 	}
 }
 
-/**
-  * @brief  Converts array to single uint32_t
-  * @param  None
-  * @retval Number of packets to be received
-  */
-static inline uint32_t TotalPacket(uint32_t *array)
-{
-	uint32_t packets = 0;
-	// Lookup table for power of base 10 constants: 10^0, 10^1, ...
-	static uint32_t pow10[] = {1, 10, 100, 1000};
-
-	for (uint8_t i = 0; i < PCK_LEN; i++)
-	{
-		if (*(array + i) == 0)
-		{
-			packets += (*(array + i)) * pow10[(PCK_LEN - 1) - i];
-		}
-		else
-		{
-			packets += (*(array + i)) * pow10[(PCK_LEN - 1) - i];
-		}
-	}
-
-	return packets;
-}
 
 /**
   * @brief  UART Receive Complete Interrupt Callback
@@ -594,6 +597,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   * @param  numPackets the number of expected packets to be received
   * @retval wordsToCRC the number of words to CRC
   */
+/*
 static inline uint32_t WordsToCRC(void)
 {
 	uint32_t wordsToCRC = 0;
@@ -601,7 +605,7 @@ static inline uint32_t WordsToCRC(void)
 
 	return wordsToCRC;
 }
-
+*/
 /**
   * @brief  Converts array to single uint32_t
   * @param  *array - array to be converted
