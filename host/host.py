@@ -5,7 +5,7 @@ import sys
 import time
 
 # Constants
-fileName = 'tv1.bin'
+fileName = 'cli.bin'
 portNum = 'COM3'
 SIZE = 256
 
@@ -84,6 +84,7 @@ def ReadNextPacket():
 
     if (packet == b''):
         endFlag = 1              # Set end of file flag
+        
         print("End of file ")
         dataFile.close()         # Close file 
     
@@ -98,20 +99,46 @@ def Transmit(dataPacket):
                 #port.write(b'\xFF')
                 dataPacket += b'\xFF'       # Append null characters to fill packet 
                 x += 1
+    # CRC32 Ethernet method
+    #checkVal = Checksum(dataPacket)         # String of hexadecimal format
+    #crcDecimal = int(checkVal, 16)          # convert to decimal 
+    #crc = list(map(int, str(crcDecimal)))   # convert integer to list
+    #if (len(crc) != 10):                    # STM32 expects 10 digits
+    #            crc.insert(0, 0)
 
-    checkVal = Checksum(dataPacket)         # String of hexadecimal format
-    crcDecimal = int(checkVal, 16)          # convert to decimal 
-    crc = list(map(int, str(crcDecimal)))   # convert integer to list
-    if (len(crc) != 10):                    # STM32 expects 10 digits
-        crc.insert(0, 0)
+    # Sum of all elements method
+    #crc = sum(dataPacket)
 
-    print(crc)
+    crc = ModbusCRC(dataPacket, SIZE)
+    crc = list(map(int, str(crc)))
 
+    x = len(crc)
+    if (x != 5): # MCU expects 5 digits (16-bit)
+        for _ in range(0, (5 - x)):
+            crc.insert(0, 0)
+    
     # Send bytes to com port to be received
     print("Begin Transmission")
     port.write(dataPacket)  # Send data packet 
+    print(crc)
     port.write(crc)         # Send checksum of packet
     print("End packet ")
+
+def ModbusCRC(array, length):
+    crc = 0xFFFFFFFF
+
+    for pos in range(0, length):
+        crc ^= array[pos]               # XOR byte into least significant byte of CRC
+ 
+        for _ in range(0,8):            # Loop over each bit
+            if ((crc & 0x0001) != 0):   # If the LSB is set 
+                crc >>= 1               # Shift right 
+                crc ^= 0xA001           # XOR 0xA001
+            else:                       # If LSB not set
+                crc >>= 1               # Shift right
+
+    print(crc)
+    return crc
 
 
 def NumberOfPackets():
