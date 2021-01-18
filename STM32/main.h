@@ -60,6 +60,7 @@ void PeripheralDeInit(void);
 void BLJumpToUserApp(void);
 void EraseFlashApp(void);
 void WriteToFlash (uint16_t index);
+uint32_t ModbusCRC(uint8_t *array, uint16_t length);
 
 /* USER CODE END EFP */
 
@@ -75,7 +76,10 @@ void WriteToFlash (uint16_t index);
 #define SWCLK_Pin GPIO_PIN_14
 #define SWCLK_GPIO_Port GPIOA
 /* USER CODE BEGIN Private defines */
-
+#define BYTES_PER_PAGE 1024
+#define BYTES_PER_WORD 4
+#define CRC_LEN 5
+#define CRC16_POLY 0xA001
 #define FLASH_BASE_ADDR ((uint32_t) 0x8000000) // Base address of flash memory
 #define FLASH_USR_ADDR ((uint32_t) 0x08005000) // Base address of user app flash memory
 #define MAX_FLASH_PAGES 64 // Maximum number of pages of flash memory
