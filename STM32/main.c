@@ -66,12 +66,7 @@ static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static inline uint32_t PagesToErase(void);
-static inline uint32_t TotalPacket(uint32_t *array);
-//static inline uint32_t WordsToCRC(void);
 static inline uint32_t ArrayToInt(uint32_t *array, uint8_t length);
-uint32_t PackSum(void);
-uint32_t ModbusCRC(char *array, uint16_t length);
-
 
 /* USER CODE END PFP */
 
@@ -88,7 +83,6 @@ int main(void)
 {
   /* USER CODE BEGIN 1 */
   uint32_t crc = 0xFFFFFFFF; 	// CRC value generated MCU side
-  //uint32_t crcLength = 0;		// Buffer length for CRC calculation
   uint32_t crcRx = 0xFFFFFFFF; 	// new firmware program checksum
   uint8_t i;
   const char ready[] = "1"; // Ready for next transaction flag
@@ -96,13 +90,6 @@ int main(void)
   const char ack[] = "1";	// Checksum match
   const char nack[] = "2";	// Checksum mismatch
   char tx[20] = {0};
-  /*
-  const uint32_t checksum[] = {
-		  329879226, 449673724, 4140103232, 931376538, 1890820909,  1819448497,
-		  1951130121, 3502373503, 1803464321, 363676448, 1890804407, 1898828815,
-		  123227065, 2161815714, 2189338259, 1234554558, 3356306015, 2401270816,
-		  2441396212, 1190719778
-  };*/
 
   // Allocate RAM buffer in heap to survive beyond the scope of main
   ram = (uint8_t*) calloc(CALLOC_SIZE, sizeof(uint8_t));
@@ -167,7 +154,7 @@ int main(void)
 	  HAL_UART_Receive(&huart1, (uint8_t *)&rxPack[i], 1, HAL_MAX_DELAY);
   }
   // Process number of expected data packets
-  packetExpect = TotalPacket(rxPack);
+  packetExpect = ArrayToInt(rxPack, (uint8_t)PCK_LEN);
 
   // Now host waits for ready bit to send data packets
   HAL_Delay(1000);
@@ -198,9 +185,8 @@ int main(void)
 			  // Convert the array to integer
 			  crcRx = ArrayToInt(checksumRx, (uint8_t)CRC_LEN);
 
-			  //crc = PackSum(); // Generated sum of all elements in packet
 			  // Run CRC16 on RAM buffer
-			  crc = ModbusCRC((char *)ram, (uint16_t)CALLOC_SIZE);
+			  crc = ModbusCRC(ram, (uint16_t)CALLOC_SIZE);
 
 			  if (crc == crcRx) // If checksums match
 			  {
@@ -343,20 +329,25 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-uint32_t ModbusCRC(char *array, uint16_t length) {
+/**
+  * @brief  Calculates a checksum value for the RAM buffer
+  * @param  *array - points to array holding the received data packet
+  * @param  length - length of the data packet to be received
+  * @retval crc	- the checksum value of the data packet
+  */
+uint32_t ModbusCRC(uint8_t *array, uint16_t length) {
 	uint32_t crc = 0xFFFFFFFF;
-	uint32_t test;
+
 	for (uint16_t pos = 0; pos < length; pos++)
 	{
 		crc ^= (uint32_t)(*(array + pos));	// XOR byte into least sig. byte of CRC
-		test = (*(array + pos));
-		test = (uint32_t)(*(array + pos));
-		for (uint8_t i = 8; i != 0; i--)	// loop over each bit
+
+		for (uint8_t i = 0; i < 8; i++)		// loop over each bit
 		{
 			if ((crc & 0x0001) != 0)		// if the LSB is set
 			{
 				crc >>= 1;					// shift right
-				crc ^= 0xA001;				// XOR CRC16 polynomial
+				crc ^= CRC16_POLY;			// XOR CRC16 polynomial
 			}
 			else 							// LSB is not set
 			{
@@ -370,38 +361,23 @@ uint32_t ModbusCRC(char *array, uint16_t length) {
 
 /**
   * @brief  Converts array to single uint32_t
-  * @param  *array - points to array holding number of packets to be received
-  * @retval Number of packets to be received
+  * @param  *array - array to be converted
+  * @param  length - number of indices in array
+  * @retval integer - the integer representation of input array
   */
-static inline uint32_t TotalPacket(uint32_t *array)
+static inline uint32_t ArrayToInt(uint32_t *array, uint8_t length)
 {
-	uint32_t packets = 0;
+	uint32_t integer = 0;
 	// Lookup table for power of base 10 constants: 10^0, 10^1, ...
-	static uint32_t pow10[] = {1, 10, 100, 1000};
+	const uint32_t pow10[] = {1, 10, 100, 1000, 10000, 100000, 1000000,
+								10000000, 100000000, 1000000000};
 
-	for (uint8_t i = 0; i < PCK_LEN; i++)
+	for (uint8_t i = 0; i < length; i++)
 	{
-		if (*(array + i) == 0)
-		{
-			packets += (*(array + i)) * pow10[(PCK_LEN - 1) - i];
-		}
-		else
-		{
-			packets += (*(array + i)) * pow10[(PCK_LEN - 1) - i];
-		}
+		integer += (*(array + i)) * pow10[(length - 1) - i];
 	}
 
-	return packets;
-}
-
-uint32_t PackSum(void){
-	uint32_t sum = 0;
-
-	for (uint16_t i = 0; i < CALLOC_SIZE; i++) {
-		sum += *(ram + i);
-	}
-
-	return sum;
+	return integer;
 }
 
 /**
@@ -437,7 +413,6 @@ void PeripheralDeInit(void)
 	__HAL_RCC_GPIOA_CLK_DISABLE();
 	__HAL_RCC_GPIOB_CLK_DISABLE();
 	__HAL_RCC_GPIOC_CLK_DISABLE();
-	//__HAL_RCC_GPIOD_CLK_DISABLE();
 
 	// 2. ADC
 	// 3. DAC1
@@ -489,12 +464,15 @@ void BLJumpToUserApp(void)
 /**
   * @brief  Calculates the number of pages of user app flash to erase
   * @param  None
-  * @retval Number of pages of flash to erase
+  * @retval numPages - Number of pages of flash to erase
   */
 static inline uint32_t PagesToErase(void)
 {
 	uint32_t numPages;
-	numPages = ((FLASH_BASE_ADDR + (MAX_FLASH_PAGES * 1024)) - FLASH_USR_ADDR) / 1024;
+
+	numPages = (FLASH_BASE_ADDR + (MAX_FLASH_PAGES * BYTES_PER_PAGE));
+	numPages -= FLASH_USR_ADDR;
+	numPages = numPages / BYTES_PER_PAGE;
 
 	return numPages;
 }
@@ -528,7 +506,7 @@ void EraseFlashApp(void)
 
 /**
   * @brief  Write data to flash memory
-  * @param  Input: RAM buffer index
+  * @param  index - RAM buffer index
   * @retval None
   */
 void WriteToFlash (uint16_t index)
@@ -573,10 +551,9 @@ void WriteToFlash (uint16_t index)
 	}
 }
 
-
 /**
   * @brief  UART Receive Complete Interrupt Callback
-  * @param  None
+  * @param  *huart - UART Handle ID
   * @retval None
   */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
@@ -590,47 +567,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 		}
 		HAL_GPIO_WritePin(GREEN_LED_PORT, GREEN_LED_PIN, GPIO_PIN_RESET);
 	}
-}
-
-/**
-  * @brief  Calculate the number of 32-bit words to include in CRC calculation
-  * @param  numPackets the number of expected packets to be received
-  * @retval wordsToCRC the number of words to CRC
-  */
-/*
-static inline uint32_t WordsToCRC(void)
-{
-	uint32_t wordsToCRC = 0;
-	wordsToCRC = (CALLOC_SIZE / BYTES_PER_WORD) - 1; // Number of words in one packet
-
-	return wordsToCRC;
-}
-*/
-/**
-  * @brief  Converts array to single uint32_t
-  * @param  *array - array to be converted
-  * @retval integer - the integer representation of input array
-  */
-static inline uint32_t ArrayToInt(uint32_t *array, uint8_t length)
-{
-	uint32_t integer = 0;
-	// Lookup table for power of base 10 constants: 10^0, 10^1, ...
-	static uint32_t pow10[] = {1, 10, 100, 1000, 10000, 100000, 1000000,
-								10000000, 100000000, 1000000000};
-
-	for (uint8_t i = 0; i < length; i++)
-	{
-		if (*(array + i) == 0)
-		{
-			integer += (*(array + i)) * pow10[(length - 1) - i];
-		}
-		else
-		{
-			integer += (*(array + i)) * pow10[(length - 1) - i];
-		}
-	}
-
-	return integer;
 }
 
 /* USER CODE END 4 */
