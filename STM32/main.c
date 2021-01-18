@@ -55,8 +55,8 @@ static uint16_t rxIndex = 0; // Receive buffer index
 static uint32_t packetExpect = 0;
 static uint16_t packetIndex = 0;
 uint32_t rxPack[PCK_LEN] = {0}; // Receives total number of packets
-char ready[] = "1";
-char *ram; // Allocate SRAM to receive data from COM Port
+uint32_t checksumRx[CRC_LEN] = {0}; // Receive checksum buffer
+uint8_t *ram; // Allocate SRAM to receive data from COM Port
 
 /* USER CODE END PV */
 
@@ -66,7 +66,7 @@ static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static inline uint32_t PagesToErase(void);
-static inline uint32_t TotalPacket(uint32_t *array);
+static inline uint32_t ArrayToInt(uint32_t *array, uint8_t length);
 
 /* USER CODE END PFP */
 
@@ -82,12 +82,17 @@ static inline uint32_t TotalPacket(uint32_t *array);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-  char ready[] = "1"; // Ready for next transaction flag
-  char begin[] = "2"; // Begin file transfer flag
+  uint32_t crc = 0xFFFFFFFF; 	// CRC value generated MCU side
+  uint32_t crcRx = 0xFFFFFFFF; 	// new firmware program checksum
+  uint8_t i;
+  const char ready[] = "1"; // Ready for next transaction flag
+  const char begin[] = "2"; // Begin file transfer flag
+  const char ack[] = "1";	// Checksum match
+  const char nack[] = "2";	// Checksum mismatch
   char tx[20] = {0};
 
   // Allocate RAM buffer in heap to survive beyond the scope of main
-  ram = (char*) calloc(CALLOC_SIZE, sizeof(char));
+  ram = (uint8_t*) calloc(CALLOC_SIZE, sizeof(uint8_t));
 
   if (ram == NULL)
   {
@@ -143,14 +148,13 @@ int main(void)
   // Send Ready signal to PC to begin download
   HAL_UART_Transmit(&huart1, (uint8_t*)begin, sizeof(begin), HAL_MAX_DELAY);
 
-  for (uint8_t i = 0; i < PCK_LEN; i++)
+  // Receive number of packets from UART
+  for (i = 0; i < PCK_LEN; i++)
   {
-	  // Receive number of packets from UART
 	  HAL_UART_Receive(&huart1, (uint8_t *)&rxPack[i], 1, HAL_MAX_DELAY);
   }
-
   // Process number of expected data packets
-  packetExpect = TotalPacket(rxPack);
+  packetExpect = ArrayToInt(rxPack, (uint8_t)PCK_LEN);
 
   // Now host waits for ready bit to send data packets
   HAL_Delay(1000);
@@ -166,23 +170,41 @@ int main(void)
 
 	  if (rxCplt == 1) // If receive transaction is complete
 	  {
-		  rxCplt = 0;			// Clear flag
+		  rxCplt = 0;					// Clear flag
 		  *(ram + rxIndex) = rxByte;	// Store received byte in RAM buffer
-		  rxIndex += 1;			// Increment RAM offset
+		  rxIndex += 1;					// Increment RAM offset
 
-		  if (rxIndex == CALLOC_SIZE) 	// Data packet is filled
+		  if (rxIndex == CALLOC_SIZE) 	// Data Packet Filled handling
 		  {
-		  	packetIndex++;		// Increment the number of packets received
-		  	WriteToFlash(rxIndex); 	// Write RAM buffer contents to Flash
-		  	rxIndex = 0;		// Clear the packet index
+			  // Receive the checksum of the new data packet
+			  for (i = 0; i < CRC_LEN; i++)
+			  {
+				  HAL_UART_AbortReceive_IT(&huart1);
+				  HAL_UART_Receive(&huart1, (uint8_t *)&checksumRx[i], 1, HAL_MAX_DELAY);
+			  }
+			  // Convert the array to integer
+			  crcRx = ArrayToInt(checksumRx, (uint8_t)CRC_LEN);
 
-		  	// Process complete, send Ready flag
-		  	HAL_UART_Transmit(&huart1, (uint8_t*)ready, sizeof(ready), HAL_MAX_DELAY);
-		  }
+			  // Run CRC16 on RAM buffer
+			  crc = ModbusCRC(ram, (uint16_t)CALLOC_SIZE);
 
-		  // Flush Receive Data Register
-		  __HAL_UART_FLUSH_DRREGISTER(&huart1);
-	  }
+			  if (crc == crcRx) // If checksums match
+			  {
+				  packetIndex++;			// Increment packet number
+				  WriteToFlash(rxIndex); 	// Write RAM buffer contents to Flash
+
+				  // Send acknowledge flag to host
+				  HAL_UART_Transmit(&huart1, (uint8_t*)ack, sizeof(ack), HAL_MAX_DELAY);
+			  }
+			  else
+			  {
+				  // Send nack flag to host
+				  HAL_UART_Transmit(&huart1, (uint8_t*)nack, sizeof(nack), HAL_MAX_DELAY);
+			  }
+			  rxIndex = 0;				// Clear the packet index
+		  } // End Data Packet Filled handling
+		  __HAL_UART_FLUSH_DRREGISTER(&huart1);	  // Flush Receive Data Register
+	  } // End rxCplt handling
 
 	  if (packetIndex == packetExpect) // All packets have been received
 	  {
@@ -192,7 +214,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-  }
+  } // End while(1)
   /* USER CODE END 3 */
 }
 
@@ -307,7 +329,56 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+/**
+  * @brief  Calculates a checksum value for the RAM buffer
+  * @param  *array - points to array holding the received data packet
+  * @param  length - length of the data packet to be received
+  * @retval crc	- the checksum value of the data packet
+  */
+uint32_t ModbusCRC(uint8_t *array, uint16_t length) {
+	uint32_t crc = 0xFFFFFFFF;
 
+	for (uint16_t pos = 0; pos < length; pos++)
+	{
+		crc ^= (uint32_t)(*(array + pos));	// XOR byte into least sig. byte of CRC
+
+		for (uint8_t i = 0; i < 8; i++)		// loop over each bit
+		{
+			if ((crc & 0x0001) != 0)		// if the LSB is set
+			{
+				crc >>= 1;					// shift right
+				crc ^= CRC16_POLY;			// XOR CRC16 polynomial
+			}
+			else 							// LSB is not set
+			{
+				crc >>= 1;					// Shift right
+			}
+		}
+	}
+
+	return crc;
+}
+
+/**
+  * @brief  Converts array to single uint32_t
+  * @param  *array - array to be converted
+  * @param  length - number of indices in array
+  * @retval integer - the integer representation of input array
+  */
+static inline uint32_t ArrayToInt(uint32_t *array, uint8_t length)
+{
+	uint32_t integer = 0;
+	// Lookup table for power of base 10 constants: 10^0, 10^1, ...
+	const uint32_t pow10[] = {1, 10, 100, 1000, 10000, 100000, 1000000,
+								10000000, 100000000, 1000000000};
+
+	for (uint8_t i = 0; i < length; i++)
+	{
+		integer += (*(array + i)) * pow10[(length - 1) - i];
+	}
+
+	return integer;
+}
 
 /**
   * @brief  Relocates Interrupt Vector Table to SRAM
@@ -342,7 +413,6 @@ void PeripheralDeInit(void)
 	__HAL_RCC_GPIOA_CLK_DISABLE();
 	__HAL_RCC_GPIOB_CLK_DISABLE();
 	__HAL_RCC_GPIOC_CLK_DISABLE();
-	//__HAL_RCC_GPIOD_CLK_DISABLE();
 
 	// 2. ADC
 	// 3. DAC1
@@ -394,12 +464,15 @@ void BLJumpToUserApp(void)
 /**
   * @brief  Calculates the number of pages of user app flash to erase
   * @param  None
-  * @retval Number of pages of flash to erase
+  * @retval numPages - Number of pages of flash to erase
   */
 static inline uint32_t PagesToErase(void)
 {
 	uint32_t numPages;
-	numPages = ((FLASH_BASE_ADDR + (MAX_FLASH_PAGES * 1024)) - FLASH_USR_ADDR) / 1024;
+
+	numPages = (FLASH_BASE_ADDR + (MAX_FLASH_PAGES * BYTES_PER_PAGE));
+	numPages -= FLASH_USR_ADDR;
+	numPages = numPages / BYTES_PER_PAGE;
 
 	return numPages;
 }
@@ -433,7 +506,7 @@ void EraseFlashApp(void)
 
 /**
   * @brief  Write data to flash memory
-  * @param  Input: RAM buffer index
+  * @param  index - RAM buffer index
   * @retval None
   */
 void WriteToFlash (uint16_t index)
@@ -479,34 +552,8 @@ void WriteToFlash (uint16_t index)
 }
 
 /**
-  * @brief  Converts array to single uint32_t
-  * @param  None
-  * @retval Number of packets to be received
-  */
-static inline uint32_t TotalPacket(uint32_t *array)
-{
-	uint32_t packets = 0;
-	// Lookup table for power of base 10 constants: 10^0, 10^1, ...
-	static uint32_t pow10[] = {1, 10, 100, 1000};
-
-	for (uint8_t i = 0; i < PCK_LEN; i++)
-	{
-		if (*(array + i) == 0)
-		{
-			packets += (*(array + i)) * pow10[(PCK_LEN - 1) - i];
-		}
-		else
-		{
-			packets += (*(array + i)) * pow10[(PCK_LEN - 1) - i];
-		}
-	}
-
-	return packets;
-}
-
-/**
   * @brief  UART Receive Complete Interrupt Callback
-  * @param  None
+  * @param  *huart - UART Handle ID
   * @retval None
   */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
